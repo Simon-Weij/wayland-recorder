@@ -171,7 +171,8 @@ func buildEncoderArgs(codec string, encoderSpeed int, quality int) ([]string, er
 	case "h264", "x264":
 		args = []string{"!", "x264enc", fmt.Sprintf("speed-preset=%d", encoderSpeed)}
 		if quality > 0 {
-			args = append(args, fmt.Sprintf("bitrate=%d", quality))
+			bitrateKbps := quality / 1000
+			args = append(args, fmt.Sprintf("bitrate=%d", bitrateKbps))
 		}
 	default:
 		return nil, fmt.Errorf("unsupported codec: %s (use: vp8, vp9, h264, or x264)", codec)
@@ -183,11 +184,11 @@ func buildEncoderArgs(codec string, encoderSpeed int, quality int) ([]string, er
 func buildMuxerArgs(container string) ([]string, error) {
 	switch container {
 	case "webm":
-		return []string{"!", "webmmux"}, nil
+		return []string{"!", "webmmux", "streamable=true"}, nil
 	case "mp4":
-		return []string{"!", "mp4mux"}, nil
+		return []string{"!", "mp4mux", "fragment-duration=1000", "streamable=true"}, nil
 	case "mkv":
-		return []string{"!", "matroskamux"}, nil
+		return []string{"!", "matroskamux", "streamable=true"}, nil
 	default:
 		return nil, fmt.Errorf("unsupported container: %s (use: webm, mp4, or mkv)", container)
 	}
@@ -199,6 +200,7 @@ func buildSinkArgs(outputPath string) []string {
 
 func buildGStreamerArgs(nodeID uint32, opts CaptureOptions) ([]string, error) {
 	args := []string{
+		"-e",
 		"pipewiresrc", fmt.Sprintf("path=%d", nodeID),
 		"!", "videoconvert",
 	}
@@ -243,9 +245,10 @@ func executeRecording(args []string, outputPath string) error {
 
 	select {
 	case <-interruptSignal:
-		command.Process.Signal(syscall.SIGTERM)
+		fmt.Println("\nStopping recording and finalizing file...")
+		command.Process.Signal(syscall.SIGINT)
 		<-finished
-		fmt.Println("\nStopped")
+		fmt.Println("Stopped")
 	case err := <-finished:
 		if err != nil {
 			return err
