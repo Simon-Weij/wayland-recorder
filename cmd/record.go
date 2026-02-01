@@ -9,7 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"simon-weij/wayland-record/lib"
+	"simon-weij/wayland-recorder/lib"
 	"strings"
 	"time"
 

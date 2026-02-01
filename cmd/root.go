@@ -13,7 +13,7 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "wayland-record",
+	Use:   "wayland-recorder",
 	Short: "Record your screen on Wayland",
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		if os.Getenv("WAYLAND_DISPLAY") == "" {

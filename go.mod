@@ -1,4 +1,4 @@
-module simon-weij/wayland-record
+module simon-weij/wayland-recorder
 
 go 1.25.5
 

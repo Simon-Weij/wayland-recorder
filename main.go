@@ -4,7 +4,7 @@
 
 package main
 
-import "simon-weij/wayland-record/cmd"
+import "simon-weij/wayland-recorder/cmd"
 
 func main() {
 	cmd.Execute()
