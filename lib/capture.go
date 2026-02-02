@@ -37,11 +37,15 @@ type CaptureOptions struct {
 	Container    string
 	EncoderSpeed int
 	Quality      int
+	AudioMonitor bool
+	AudioMic     bool
 }
 
 func token() string {
 	randomBytes := make([]byte, 16)
-	rand.Read(randomBytes)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return fmt.Sprintf("%d", os.Getpid())
+	}
 	return hex.EncodeToString(randomBytes)
 }
 
@@ -194,16 +198,38 @@ func buildMuxerArgs(container string) ([]string, error) {
 	}
 }
 
-func buildSinkArgs(outputPath string) []string {
-	return []string{"!", "filesink", fmt.Sprintf("location=%s", outputPath)}
+func buildAudioPipeline(opts CaptureOptions) []string {
+	if !opts.AudioMonitor && !opts.AudioMic {
+		return nil
+	}
+
+	var pipeline []string
+
+	if opts.AudioMonitor && opts.AudioMic {
+		pipeline = []string{
+			"audiomixer", "name=mix",
+			"pulsesrc", "device=@DEFAULT_MONITOR@", "!", "queue", "!", "audioconvert", "!", "mix.",
+			"pulsesrc", "device=@DEFAULT_SOURCE@", "!", "queue", "!", "audioconvert", "!", "mix.",
+			"mix.", "!", "audioresample", "!", "opusenc",
+		}
+	} else {
+		device := "@DEFAULT_MONITOR@"
+		if opts.AudioMic {
+			device = "@DEFAULT_SOURCE@"
+		}
+		pipeline = []string{
+			"pulsesrc", fmt.Sprintf("device=%s", device),
+			"!", "queue", "!", "audioconvert", "!", "audioresample", "!", "opusenc",
+		}
+	}
+
+	return pipeline
 }
 
 func buildGStreamerArgs(nodeID uint32, opts CaptureOptions) ([]string, error) {
-	args := []string{
-		"-e",
-		"pipewiresrc", fmt.Sprintf("path=%d", nodeID),
-		"!", "videoconvert",
-	}
+	args := []string{"-e"}
+
+	args = append(args, "pipewiresrc", fmt.Sprintf("path=%d", nodeID), "!", "videoconvert", "!", "queue")
 
 	encoderArgs, err := buildEncoderArgs(opts.Codec, opts.EncoderSpeed, opts.Quality)
 	if err != nil {
@@ -217,8 +243,15 @@ func buildGStreamerArgs(nodeID uint32, opts CaptureOptions) ([]string, error) {
 	}
 	args = append(args, muxerArgs...)
 
-	sinkArgs := buildSinkArgs(opts.OutputPath)
-	args = append(args, sinkArgs...)
+	audioPipeline := buildAudioPipeline(opts)
+	if len(audioPipeline) > 0 {
+		args = append(args, "name=mux")
+		args = append(args, audioPipeline...)
+		args = append(args, "!", "mux.")
+		args = append(args, "mux.", "!", "filesink", fmt.Sprintf("location=%s", opts.OutputPath))
+	} else {
+		args = append(args, "!", "filesink", fmt.Sprintf("location=%s", opts.OutputPath))
+	}
 
 	return args, nil
 }

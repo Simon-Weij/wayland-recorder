@@ -24,6 +24,8 @@ var (
 	container     string
 	encoderSpeed  int
 	quality       int
+	audioMonitor  bool
+	audioMic      bool
 )
 
 func parseSourceType(s string) (uint32, error) {
@@ -88,6 +90,8 @@ var recordCmd = &cobra.Command{
 			Container:    container,
 			EncoderSpeed: encoderSpeed,
 			Quality:      quality,
+			AudioMonitor: audioMonitor,
+			AudioMic:     audioMic,
 		}
 		if err := lib.Capture(streams[0].NodeID, captureOpts); err != nil {
 			log.Fatal(err)
@@ -108,4 +112,7 @@ func init() {
 
 	recordCmd.Flags().IntVar(&encoderSpeed, "speed", 6, "Encoder speed/deadline (higher = better quality, slower)")
 	recordCmd.Flags().IntVar(&quality, "quality", 5000000, "Target bitrate in bits/second (0=codec default)")
+
+	recordCmd.Flags().BoolVar(&audioMonitor, "audio-monitor", true, "Record system audio (monitor)")
+	recordCmd.Flags().BoolVar(&audioMic, "audio-mic", true, "Record microphone audio")
 }
