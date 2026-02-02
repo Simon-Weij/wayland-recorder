@@ -5,152 +5,34 @@
 package lib
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
-
-	"github.com/godbus/dbus/v5"
+	"time"
 )
 
 const (
 	DefaultFilePermissions = 0755
-	GStreamerCommand       = "gst-launch-1.0"
-	PortalServiceName      = "org.freedesktop.portal.Desktop"
-	PortalObjectPath       = "/org/freedesktop/portal/desktop"
-	CreateSessionMethod    = "org.freedesktop.portal.ScreenCast.CreateSession"
-	SelectSourcesMethod    = "org.freedesktop.portal.ScreenCast.SelectSources"
-	StartRecordingMethod   = "org.freedesktop.portal.ScreenCast.Start"
 )
 
-type Stream struct {
-	NodeID uint32
-}
-
-type CaptureOptions struct {
-	OutputPath   string
-	Codec        string
-	Container    string
-	EncoderSpeed int
-	Quality      int
-	AudioMonitor bool
-	AudioMic     bool
-}
-
-func token() string {
-	randomBytes := make([]byte, 16)
-	if _, err := rand.Read(randomBytes); err != nil {
-		return fmt.Sprintf("%d", os.Getpid())
-	}
-	return hex.EncodeToString(randomBytes)
-}
-
-func waitResponse(conn *dbus.Conn, path dbus.ObjectPath) (map[string]dbus.Variant, error) {
-	signalChannel := make(chan *dbus.Signal, 1)
-	conn.Signal(signalChannel)
-
-	listenRule := fmt.Sprintf("type='signal',path='%s'", path)
-	conn.BusObject().Call("org.freedesktop.DBus.AddMatch", 0, listenRule)
-	defer conn.BusObject().Call("org.freedesktop.DBus.RemoveMatch", 0, listenRule)
-
-	for signal := range signalChannel {
-		if signal.Path == path {
-			responseCode := signal.Body[0].(uint32)
-			if responseCode != 0 {
-				return nil, fmt.Errorf("failed: %d", responseCode)
-			}
-			responseData := signal.Body[1].(map[string]dbus.Variant)
-			return responseData, nil
-		}
-	}
-	return nil, fmt.Errorf("no response")
-}
-
-func CreateSession() (*dbus.Conn, dbus.ObjectPath, error) {
-	connection, err := dbus.ConnectSessionBus()
-	if err != nil {
-		return nil, "", err
+func Capture(nodeID uint32, opts CaptureOptions) error {
+	if err := ensureOutputDirectory(opts.OutputPath); err != nil {
+		return err
 	}
 
-	desktopPortal := connection.Object(PortalServiceName, PortalObjectPath)
+	applyDefaults(&opts)
 
-	options := map[string]dbus.Variant{
-		"session_handle_token": dbus.MakeVariant(token()),
-		"handle_token":         dbus.MakeVariant(token()),
-	}
-
-	requestPath := dbus.ObjectPath("")
-	err = desktopPortal.Call(CreateSessionMethod, 0, options).Store(&requestPath)
-	if err != nil {
-		connection.Close()
-		return nil, "", err
-	}
-
-	response, err := waitResponse(connection, requestPath)
-	if err != nil {
-		connection.Close()
-		return nil, "", err
-	}
-
-	sessionHandle := response["session_handle"].Value().(string)
-	sessionPath := dbus.ObjectPath(sessionHandle)
-	return connection, sessionPath, nil
-}
-
-func SelectSources(conn *dbus.Conn, session dbus.ObjectPath, sourceType uint32, cursorMode uint32) error {
-	desktopPortal := conn.Object(PortalServiceName, PortalObjectPath)
-
-	options := map[string]dbus.Variant{
-		"handle_token": dbus.MakeVariant(token()),
-		"types":        dbus.MakeVariant(sourceType),
-		"cursor_mode":  dbus.MakeVariant(cursorMode),
-	}
-
-	var requestPath dbus.ObjectPath
-	err := desktopPortal.Call(SelectSourcesMethod, 0, session, options).Store(&requestPath)
+	segmentManager := setupSegmentManager(&opts)
+	args, err := BuildGStreamerArgs(nodeID, opts)
 	if err != nil {
 		return err
 	}
 
-	_, err = waitResponse(conn, requestPath)
-	return err
-}
-
-func StartRecording(conn *dbus.Conn, session dbus.ObjectPath) ([]Stream, error) {
-	desktopPortal := conn.Object(PortalServiceName, PortalObjectPath)
-
-	options := map[string]dbus.Variant{"handle_token": dbus.MakeVariant(token())}
-
-	var requestPath dbus.ObjectPath
-	err := desktopPortal.Call(StartRecordingMethod, 0, session, "", options).Store(&requestPath)
-	if err != nil {
-		return nil, err
-	}
-
-	response, err := waitResponse(conn, requestPath)
-	if err != nil {
-		return nil, err
-	}
-
-	var streams []Stream
-	streamsData := response["streams"].Value()
-
-	if streamArray, isCorrectType := streamsData.([][]interface{}); isCorrectType {
-		for _, streamInfo := range streamArray {
-			if nodeID, isUint32 := streamInfo[0].(uint32); isUint32 {
-				streams = append(streams, Stream{NodeID: nodeID})
-			}
-		}
-	}
-
-	if len(streams) == 0 {
-		return nil, fmt.Errorf("no streams found")
-	}
-	return streams, nil
+	return startRecording(args, opts, segmentManager)
 }
 
 func ensureOutputDirectory(outputPath string) error {
@@ -158,149 +40,150 @@ func ensureOutputDirectory(outputPath string) error {
 	return os.MkdirAll(directoryPath, DefaultFilePermissions)
 }
 
-func buildEncoderArgs(codec string, encoderSpeed int, quality int) ([]string, error) {
-	var args []string
-
-	switch codec {
-	case "vp8":
-		args = []string{"!", "vp8enc", fmt.Sprintf("deadline=%d", encoderSpeed)}
-		if quality > 0 {
-			args = append(args, fmt.Sprintf("target-bitrate=%d", quality))
-		}
-	case "vp9":
-		args = []string{"!", "vp9enc", fmt.Sprintf("deadline=%d", encoderSpeed)}
-		if quality > 0 {
-			args = append(args, fmt.Sprintf("target-bitrate=%d", quality))
-		}
-	case "h264", "x264":
-		args = []string{"!", "x264enc", fmt.Sprintf("speed-preset=%d", encoderSpeed)}
-		if quality > 0 {
-			bitrateKbps := quality / 1000
-			args = append(args, fmt.Sprintf("bitrate=%d", bitrateKbps))
-		}
-	default:
-		return nil, fmt.Errorf("unsupported codec: %s (use: vp8, vp9, h264, or x264)", codec)
+func applyDefaults(opts *CaptureOptions) {
+	if !opts.ClipMode {
+		return
 	}
 
-	return args, nil
-}
-
-func buildMuxerArgs(container string) ([]string, error) {
-	switch container {
-	case "webm":
-		return []string{"!", "webmmux", "streamable=true"}, nil
-	case "mp4":
-		return []string{"!", "mp4mux", "fragment-duration=1000", "streamable=true"}, nil
-	case "mkv":
-		return []string{"!", "matroskamux", "streamable=true"}, nil
-	default:
-		return nil, fmt.Errorf("unsupported container: %s (use: webm, mp4, or mkv)", container)
+	if opts.TempDir == "" {
+		opts.TempDir = filepath.Join(os.TempDir(), fmt.Sprintf("wayland-recorder-%d", os.Getpid()))
+	}
+	if opts.SegmentDuration == 0 {
+		opts.SegmentDuration = 5
+	}
+	if opts.BufferDuration == 0 {
+		opts.BufferDuration = 30
 	}
 }
 
-func buildAudioPipeline(opts CaptureOptions) []string {
-	if !opts.AudioMonitor && !opts.AudioMic {
+func setupSegmentManager(opts *CaptureOptions) *SegmentManager {
+	if !opts.ClipMode {
 		return nil
 	}
 
-	var pipeline []string
-
-	if opts.AudioMonitor && opts.AudioMic {
-		pipeline = []string{
-			"audiomixer", "name=mix",
-			"pulsesrc", "device=@DEFAULT_MONITOR@", "!", "queue", "!", "audioconvert", "!", "mix.",
-			"pulsesrc", "device=@DEFAULT_SOURCE@", "!", "queue", "!", "audioconvert", "!", "mix.",
-			"mix.", "!", "audioresample", "!", "opusenc",
-		}
-	} else {
-		device := "@DEFAULT_MONITOR@"
-		if opts.AudioMic {
-			device = "@DEFAULT_SOURCE@"
-		}
-		pipeline = []string{
-			"pulsesrc", fmt.Sprintf("device=%s", device),
-			"!", "queue", "!", "audioconvert", "!", "audioresample", "!", "opusenc",
-		}
+	if err := os.MkdirAll(opts.TempDir, DefaultFilePermissions); err != nil {
+		return nil
 	}
 
-	return pipeline
+	maxDuration := time.Duration(opts.BufferDuration+opts.SegmentDuration) * time.Second
+	return NewSegmentManager(maxDuration, opts.TempDir)
 }
 
-func buildGStreamerArgs(nodeID uint32, opts CaptureOptions) ([]string, error) {
-	args := []string{"-e"}
+func startRecording(args []string, opts CaptureOptions, segmentManager *SegmentManager) error {
+	cmd := exec.Command(GStreamerCommand, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 
-	args = append(args, "pipewiresrc", fmt.Sprintf("path=%d", nodeID), "!", "videoconvert", "!", "queue")
-
-	encoderArgs, err := buildEncoderArgs(opts.Codec, opts.EncoderSpeed, opts.Quality)
-	if err != nil {
-		return nil, err
-	}
-	args = append(args, encoderArgs...)
-
-	muxerArgs, err := buildMuxerArgs(opts.Container)
-	if err != nil {
-		return nil, err
-	}
-	args = append(args, muxerArgs...)
-
-	audioPipeline := buildAudioPipeline(opts)
-	if len(audioPipeline) > 0 {
-		args = append(args, "name=mux")
-		args = append(args, audioPipeline...)
-		args = append(args, "!", "mux.")
-		args = append(args, "mux.", "!", "filesink", fmt.Sprintf("location=%s", opts.OutputPath))
-	} else {
-		args = append(args, "!", "filesink", fmt.Sprintf("location=%s", opts.OutputPath))
-	}
-
-	return args, nil
-}
-
-func executeRecording(args []string, outputPath string) error {
-	command := exec.Command(GStreamerCommand, args...)
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
-
-	err := command.Start()
-	if err != nil {
+	if err := cmd.Start(); err != nil {
 		return err
 	}
 
-	fmt.Printf("Recording to: %s\nPress Ctrl+C to stop\n", outputPath)
+	printRecordingInfo(opts)
 
+	if opts.ClipMode && segmentManager != nil {
+		go MonitorSegments(opts.TempDir, opts.Container, segmentManager)
+	}
+
+	return handleRecordingSignals(cmd, opts, segmentManager)
+}
+
+func printRecordingInfo(opts CaptureOptions) {
+	if opts.ClipMode {
+		fmt.Printf("Recording with %d second buffer...\n", opts.BufferDuration)
+		fmt.Printf("Segments stored in: %s\n", opts.TempDir)
+		fmt.Printf("Send SIGUSR1 to create a clip: kill -SIGUSR1 %d\n", os.Getpid())
+		fmt.Println("Press Ctrl+C to stop recording")
+	} else {
+		fmt.Printf("Recording to: %s\n", opts.OutputPath)
+		fmt.Println("Press Ctrl+C to stop")
+	}
+}
+
+func handleRecordingSignals(cmd *exec.Cmd, opts CaptureOptions, segmentManager *SegmentManager) error {
 	interruptSignal := make(chan os.Signal, 1)
-	signal.Notify(interruptSignal, os.Interrupt, syscall.SIGTERM)
-
+	clipSignal := make(chan os.Signal, 1)
 	finished := make(chan error, 1)
+
+	signal.Notify(interruptSignal, os.Interrupt, syscall.SIGTERM)
+	if opts.ClipMode {
+		signal.Notify(clipSignal, syscall.SIGUSR1)
+	}
+
 	go func() {
-		finished <- command.Wait()
+		finished <- cmd.Wait()
 	}()
 
-	select {
-	case <-interruptSignal:
-		fmt.Println("\nStopping recording and finalizing file...")
-		command.Process.Signal(syscall.SIGINT)
-		<-finished
-		fmt.Println("Stopped")
-	case err := <-finished:
-		if err != nil {
-			return err
+	clipCounter := 1
+	for {
+		select {
+		case <-clipSignal:
+			handleClipRequest(opts, segmentManager, &clipCounter)
+
+		case <-interruptSignal:
+			return handleInterrupt(cmd, opts)
+
+		case err := <-finished:
+			return handleFinished(err)
 		}
-		fmt.Println("Done")
 	}
+}
+
+func handleClipRequest(opts CaptureOptions, segmentManager *SegmentManager, clipCounter *int) {
+	if segmentManager == nil {
+		return
+	}
+
+	fmt.Printf("\n[CLIP] Creating clip of last %d seconds...\n", opts.BufferDuration)
+	duration := time.Duration(opts.BufferDuration) * time.Second
+	segments := segmentManager.GetRecentSegments(duration)
+
+	if len(segments) == 0 {
+		fmt.Println("[CLIP] No segments available yet, wait a bit longer")
+		return
+	}
+
+	clipPath := generateClipPath(opts.OutputPath, *clipCounter)
+	*clipCounter++
+
+	go createClipAsync(segments, clipPath)
+}
+
+func generateClipPath(basePath string, counter int) string {
+	dir := filepath.Dir(basePath)
+	ext := filepath.Ext(basePath)
+	base := strings.TrimSuffix(filepath.Base(basePath), ext)
+	return filepath.Join(dir, fmt.Sprintf("%s-clip-%03d%s", base, counter, ext))
+}
+
+func createClipAsync(segments []SegmentInfo, outputPath string) {
+	if err := MergeSegments(segments, outputPath); err != nil {
+		fmt.Printf("[CLIP] Error creating clip: %v\n", err)
+	}
+}
+
+func handleInterrupt(cmd *exec.Cmd, opts CaptureOptions) error {
+	fmt.Println("\nStopping recording and finalizing...")
+	cmd.Process.Signal(syscall.SIGINT)
+
+	cmd.Wait()
+
+	if opts.ClipMode && opts.TempDir != "" {
+		cleanupTempFiles(opts.TempDir)
+	}
+
+	fmt.Println("Stopped")
 	return nil
 }
 
-func Capture(nodeID uint32, opts CaptureOptions) error {
-	err := ensureOutputDirectory(opts.OutputPath)
+func handleFinished(err error) error {
 	if err != nil {
 		return err
 	}
+	fmt.Println("Done")
+	return nil
+}
 
-	args, err := buildGStreamerArgs(nodeID, opts)
-	if err != nil {
-		return err
-	}
-
-	return executeRecording(args, opts.OutputPath)
+func cleanupTempFiles(tempDir string) {
+	fmt.Println("Cleaning up temporary segments...")
+	os.RemoveAll(tempDir)
 }

@@ -17,15 +17,19 @@ import (
 )
 
 var (
-	sourceTypeStr string
-	cursorModeStr string
-	outputPath    string
-	codec         string
-	container     string
-	encoderSpeed  int
-	quality       int
-	audioMonitor  bool
-	audioMic      bool
+	sourceTypeStr   string
+	cursorModeStr   string
+	outputPath      string
+	codec           string
+	container       string
+	encoderSpeed    int
+	quality         int
+	audioMonitor    bool
+	audioMic        bool
+	clipMode        bool
+	bufferDuration  int
+	segmentDuration int
+	tempDir         string
 )
 
 func parseSourceType(s string) (uint32, error) {
@@ -85,13 +89,17 @@ var recordCmd = &cobra.Command{
 
 		fmt.Printf("Recording stream %d\n", streams[0].NodeID)
 		captureOpts := lib.CaptureOptions{
-			OutputPath:   outputPath,
-			Codec:        codec,
-			Container:    container,
-			EncoderSpeed: encoderSpeed,
-			Quality:      quality,
-			AudioMonitor: audioMonitor,
-			AudioMic:     audioMic,
+			OutputPath:      outputPath,
+			Codec:           codec,
+			Container:       container,
+			EncoderSpeed:    encoderSpeed,
+			Quality:         quality,
+			AudioMonitor:    audioMonitor,
+			AudioMic:        audioMic,
+			ClipMode:        clipMode,
+			BufferDuration:  bufferDuration,
+			SegmentDuration: segmentDuration,
+			TempDir:         tempDir,
 		}
 		if err := lib.Capture(streams[0].NodeID, captureOpts); err != nil {
 			log.Fatal(err)
@@ -115,4 +123,9 @@ func init() {
 
 	recordCmd.Flags().BoolVar(&audioMonitor, "audio-monitor", true, "Record system audio (monitor)")
 	recordCmd.Flags().BoolVar(&audioMic, "audio-mic", true, "Record microphone audio")
+
+	recordCmd.Flags().BoolVar(&clipMode, "clip-mode", false, "Enable clip mode (buffer recording and save clips on signal)")
+	recordCmd.Flags().IntVar(&bufferDuration, "buffer-duration", 30, "Duration in seconds to keep buffered for clipping")
+	recordCmd.Flags().IntVar(&segmentDuration, "segment-duration", 5, "Duration in seconds for each segment file")
+	recordCmd.Flags().StringVar(&tempDir, "temp-dir", "", "Temporary directory for segments (default: system temp)")
 }
