@@ -110,22 +110,71 @@ var recordCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(recordCmd)
 
-	recordCmd.Flags().StringVarP(&sourceTypeStr, "source", "s", "monitor", "Source type: monitor, window, or both")
-	recordCmd.Flags().StringVarP(&cursorModeStr, "cursor", "c", "embedded", "Cursor mode: hidden, embedded, or metadata")
-
+	settings, err := loadSettings()
+	if err != nil {
+		settings = nil
+	}
+	
+	defaultCursorMode := "embedded"
+	defaultCodec := "h264"
+	defaultContainer := "mp4"
+	defaultEncoderSpeed := 6
+	defaultQuality := 5000000
+	defaultAudioMonitor := true
+	defaultAudioMic := true
+	defaultBufferDuration := 30
+	defaultSegmentDuration := 5
+	defaultTempDir := ""
 	defaultOutput := filepath.Join(os.Getenv("HOME"), "Videos", "recordings", "recording-"+time.Now().Format("2006-01-02-15-04-05")+".mp4")
+
+	if err == nil && settings != nil {
+		if settings.CursorMode != "" {
+			defaultCursorMode = settings.CursorMode
+		}
+		if settings.OutputPath != "" {
+			defaultOutput = filepath.Join(settings.OutputPath, "recording-"+time.Now().Format("2006-01-02-15-04-05")+"."+settings.Container)
+		}
+		if settings.Codec != "" {
+			defaultCodec = settings.Codec
+		}
+		if settings.Container != "" {
+			defaultContainer = settings.Container
+		}
+		if settings.EncoderSpeed != 0 {
+			defaultEncoderSpeed = settings.EncoderSpeed
+		}
+		if settings.Quality != 0 {
+			defaultQuality = settings.Quality
+		}
+
+		defaultAudioMonitor = settings.AudioMonitor
+		defaultAudioMic = settings.AudioMic
+		if settings.BufferDuration != 0 {
+			defaultBufferDuration = settings.BufferDuration
+		}
+		if settings.SegmentDuration != 0 {
+			defaultSegmentDuration = settings.SegmentDuration
+		}
+		if settings.TempDir != "" {
+			defaultTempDir = settings.TempDir
+		}
+	}
+
+	recordCmd.Flags().StringVarP(&sourceTypeStr, "source", "s", "monitor", "Source type: monitor, window, or both")
+	recordCmd.Flags().StringVarP(&cursorModeStr, "cursor", "c", defaultCursorMode, "Cursor mode: hidden, embedded, or metadata")
+
 	recordCmd.Flags().StringVarP(&outputPath, "output", "o", defaultOutput, "Output file path")
-	recordCmd.Flags().StringVar(&codec, "codec", "h264", "Video codec: vp8, vp9, h264, x264")
-	recordCmd.Flags().StringVar(&container, "container", "mp4", "Container format: webm, mp4, mkv")
+	recordCmd.Flags().StringVar(&codec, "codec", defaultCodec, "Video codec: vp8, vp9, h264, x264")
+	recordCmd.Flags().StringVar(&container, "container", defaultContainer, "Container format: webm, mp4, mkv")
 
-	recordCmd.Flags().IntVar(&encoderSpeed, "speed", 6, "Encoder speed/deadline (higher = better quality, slower)")
-	recordCmd.Flags().IntVar(&quality, "quality", 5000000, "Target bitrate in bits/second (0=codec default)")
+	recordCmd.Flags().IntVar(&encoderSpeed, "speed", defaultEncoderSpeed, "Encoder speed/deadline (higher = better quality, slower)")
+	recordCmd.Flags().IntVar(&quality, "quality", defaultQuality, "Target bitrate in bits/second (0=codec default)")
 
-	recordCmd.Flags().BoolVar(&audioMonitor, "audio-monitor", true, "Record system audio (monitor)")
-	recordCmd.Flags().BoolVar(&audioMic, "audio-mic", true, "Record microphone audio")
+	recordCmd.Flags().BoolVar(&audioMonitor, "audio-monitor", defaultAudioMonitor, "Record system audio (monitor)")
+	recordCmd.Flags().BoolVar(&audioMic, "audio-mic", defaultAudioMic, "Record microphone audio")
 
 	recordCmd.Flags().BoolVar(&clipMode, "clip-mode", false, "Enable clip mode (buffer recording and save clips on signal)")
-	recordCmd.Flags().IntVar(&bufferDuration, "buffer-duration", 30, "Duration in seconds to keep buffered for clipping")
-	recordCmd.Flags().IntVar(&segmentDuration, "segment-duration", 5, "Duration in seconds for each segment file")
-	recordCmd.Flags().StringVar(&tempDir, "temp-dir", "", "Temporary directory for segments (default: system temp)")
+	recordCmd.Flags().IntVar(&bufferDuration, "buffer-duration", defaultBufferDuration, "Duration in seconds to keep buffered for clipping")
+	recordCmd.Flags().IntVar(&segmentDuration, "segment-duration", defaultSegmentDuration, "Duration in seconds for each segment file")
+	recordCmd.Flags().StringVar(&tempDir, "temp-dir", defaultTempDir, "Temporary directory for segments (default: system temp)")
 }
