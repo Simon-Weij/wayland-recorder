@@ -21,6 +21,8 @@
         stdenv,
         defaultMeta,
         pkgs,
+        lib,
+        makeWrapper,
       }:
         pkgs.buildGoModule {
           pname = "wayland-recorder";
@@ -30,6 +32,10 @@
 
           mainProgram = "wayland-recorder";
 
+          nativeBuildInputs = [
+            makeWrapper
+          ];
+
           buildInputs = [
             pkgs.pipewire
             pkgs.gst_all_1.gstreamer
@@ -38,6 +44,20 @@
             pkgs.gst_all_1.gst-plugins-bad
             pkgs.gst_all_1.gst-plugins-ugly
           ];
+
+          postInstall = ''
+            wrapProgram $out/bin/wayland-recorder \
+              --prefix PATH : ${lib.makeBinPath [
+                pkgs.gst_all_1.gstreamer
+              ]} \
+              --prefix GST_PLUGIN_SYSTEM_PATH_1_0 : ${lib.makeSearchPath "lib/gstreamer-1.0" [
+                pkgs.gst_all_1.gstreamer
+                pkgs.gst_all_1.gst-plugins-base
+                pkgs.gst_all_1.gst-plugins-good
+                pkgs.gst_all_1.gst-plugins-bad
+                pkgs.gst_all_1.gst-plugins-ugly
+              ]}
+          '';
 
           meta = defaultMeta;
         };
