@@ -38,12 +38,6 @@ func BuildGStreamerArgs(nodeID uint32, opts CaptureOptions) ([]string, error) {
 	}
 	args = append(args, encoderArgs...)
 
-	muxerArgs, err := buildMuxerArgs(opts.Container)
-	if err != nil {
-		return nil, err
-	}
-	args = append(args, muxerArgs...)
-
 	args = appendAudioAndOutput(args, opts)
 
 	return args, nil
@@ -79,17 +73,34 @@ func buildEncoderArgs(codec string, encoderSpeed int, quality int) ([]string, er
 func buildMuxerArgs(container string) ([]string, error) {
 	switch container {
 	case "webm":
-		return []string{"!", "webmmux", "streamable=true"}, nil
+		return []string{"!", "webmmux", "streamable=true", "name=mux"}, nil
 	case "mp4":
-		return []string{"!", "mp4mux", "fragment-duration=1000", "streamable=true"}, nil
+		return []string{"!", "mp4mux", "fragment-duration=1000", "streamable=true", "name=mux"}, nil
 	case "mkv":
-		return []string{"!", "matroskamux", "streamable=true"}, nil
+		return []string{"!", "matroskamux", "streamable=true", "name=mux"}, nil
 	default:
 		return nil, fmt.Errorf("unsupported container: %s (use: webm, mp4, or mkv)", container)
 	}
 }
 
+func getMuxerName(container string) (string, error) {
+	switch container {
+	case "webm":
+		return "webmmux", nil
+	case "mp4":
+		return "mp4mux", nil
+	case "mkv":
+		return "matroskamux", nil
+	default:
+		return "", fmt.Errorf("unsupported container: %s (use: webm, mp4, or mkv)", container)
+	}
+}
+
 func buildAudioPipeline(opts CaptureOptions) []string {
+	if opts.ClipMode {
+		return nil
+	}
+	
 	if !opts.AudioMonitor && !opts.AudioMic {
 		return nil
 	}
@@ -121,10 +132,22 @@ func appendAudioAndOutput(args []string, opts CaptureOptions) []string {
 	audioPipeline := buildAudioPipeline(opts)
 
 	if len(audioPipeline) > 0 {
-		args = append(args, "name=mux")
-		args = append(args, audioPipeline...)
-		args = append(args, "!", "mux.")
-		args = appendOutputSink(args, opts, "mux.")
+		if opts.ClipMode {
+			args = append(args, audioPipeline...)
+			args = appendOutputSink(args, opts, "")
+		} else {
+			muxerArgs, err := buildMuxerArgs(opts.Container)
+			if err != nil {
+				args = appendOutputSink(args, opts, "")
+				return args
+			}
+			args = append(args, muxerArgs...)
+			
+			args = append(args, audioPipeline...)
+			args = append(args, "!", "mux.")
+			
+			args = appendOutputSink(args, opts, "mux.")
+		}
 	} else {
 		args = appendOutputSink(args, opts, "")
 	}
@@ -140,9 +163,17 @@ func appendOutputSink(args []string, opts CaptureOptions, prefix string) []strin
 	}
 
 	if opts.ClipMode {
+		muxerName, err := getMuxerName(opts.Container)
+		if err != nil {
+			args = append(args, "filesink", fmt.Sprintf("location=%s", opts.OutputPath))
+			return args
+		}
+		
 		segmentPattern := filepath.Join(opts.TempDir, "segment_%05d."+opts.Container)
 		maxSizeTime := opts.SegmentDuration * 1000000000
+		
 		args = append(args, "splitmuxsink",
+			fmt.Sprintf("muxer=%s", muxerName),
 			fmt.Sprintf("location=%s", segmentPattern),
 			fmt.Sprintf("max-size-time=%d", maxSizeTime))
 	} else {
