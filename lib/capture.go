@@ -112,6 +112,7 @@ func printRecordingInfo(opts CaptureOptions) {
 		fmt.Printf("Recording with %d second buffer...\n", opts.BufferDuration)
 		fmt.Printf("Segments stored in: %s\n", opts.TempDir)
 		fmt.Printf("Send SIGUSR1 to create a clip: kill -SIGUSR1 %d\n", os.Getpid())
+		fmt.Printf("PID: %d\n", os.Getpid())
 		fmt.Println("Press Ctrl+C to stop recording")
 	} else {
 		fmt.Printf("Recording to: %s\n", opts.OutputPath)
