@@ -41,11 +41,21 @@ func createConcatFile(segments []SegmentInfo) (string, error) {
 	}
 	defer f.Close()
 
+	validSegments := 0
 	for _, seg := range segments {
-		if _, err := os.Stat(seg.Path); os.IsNotExist(err) {
+		info, err := os.Stat(seg.Path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if info.Size() < 1024 {
 			continue
 		}
 		fmt.Fprintf(f, "file '%s'\n", seg.Path)
+		validSegments++
+	}
+
+	if validSegments == 0 {
+		return "", fmt.Errorf("no valid segments found")
 	}
 
 	return concatFile, nil

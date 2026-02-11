@@ -78,6 +78,7 @@ func (sm *SegmentManager) GetRecentSegments(duration time.Duration) []SegmentInf
 func MonitorSegments(tempDir string, container string, manager *SegmentManager) {
 	pattern := filepath.Join(tempDir, "segment_*."+container)
 	seenSegments := make(map[string]bool)
+	fileSize := make(map[string]int64)
 	segmentNumber := 0
 
 	for {
@@ -93,10 +94,15 @@ func MonitorSegments(tempDir string, container string, manager *SegmentManager) 
 				if err != nil {
 					continue
 				}
-				if time.Since(info.ModTime()) > 2*time.Second {
+				
+				prevSize, exists := fileSize[match]
+				if exists && prevSize == info.Size() && info.Size() > 1024 {
 					manager.AddSegment(match, segmentNumber)
 					seenSegments[match] = true
+					delete(fileSize, match)
 					segmentNumber++
+				} else {
+					fileSize[match] = info.Size()
 				}
 			}
 		}

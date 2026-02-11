@@ -45,6 +45,14 @@ func applyDefaults(opts *CaptureOptions) {
 		return
 	}
 
+	if opts.Container == "mp4" || opts.Container == "mkv" {
+		fmt.Println("Note: Using WebM container for clip mode")
+		opts.Container = "webm"
+	}
+	if opts.Codec == "h264" || opts.Codec == "x264" {
+		opts.Codec = "vp9"
+	}
+
 	if opts.TempDir == "" {
 		opts.TempDir = filepath.Join(os.TempDir(), fmt.Sprintf("wayland-recorder-%d", os.Getpid()))
 	}
@@ -76,6 +84,10 @@ func startRecording(args []string, opts CaptureOptions, segmentManager *SegmentM
 
 	if err := cmd.Start(); err != nil {
 		return err
+	}
+
+	if opts.ClipMode {
+		writePidFile()
 	}
 
 	printRecordingInfo(opts)
@@ -142,17 +154,16 @@ func handleClipRequest(opts CaptureOptions, segmentManager *SegmentManager, clip
 		return
 	}
 
-	clipPath := generateClipPath(opts.OutputPath, *clipCounter)
+	clipPath := generateClipPath(opts.OutputPath, opts.Container, *clipCounter)
 	*clipCounter++
 
 	go createClipAsync(segments, clipPath)
 }
 
-func generateClipPath(basePath string, counter int) string {
+func generateClipPath(basePath string, container string, counter int) string {
 	dir := filepath.Dir(basePath)
-	ext := filepath.Ext(basePath)
-	base := strings.TrimSuffix(filepath.Base(basePath), ext)
-	return filepath.Join(dir, fmt.Sprintf("%s-clip-%03d%s", base, counter, ext))
+	base := strings.TrimSuffix(filepath.Base(basePath), filepath.Ext(basePath))
+	return filepath.Join(dir, fmt.Sprintf("%s-clip-%03d.%s", base, counter, container))
 }
 
 func createClipAsync(segments []SegmentInfo, outputPath string) {
@@ -169,6 +180,7 @@ func handleInterrupt(cmd *exec.Cmd, opts CaptureOptions) error {
 
 	if opts.ClipMode && opts.TempDir != "" {
 		cleanupTempFiles(opts.TempDir)
+		cleanupPidFile()
 	}
 
 	fmt.Println("Stopped")
@@ -180,10 +192,28 @@ func handleFinished(err error) error {
 		return err
 	}
 	fmt.Println("Done")
+	cleanupPidFile()
 	return nil
 }
 
 func cleanupTempFiles(tempDir string) {
 	fmt.Println("Cleaning up temporary segments...")
 	os.RemoveAll(tempDir)
+}
+
+func writePidFile() {
+	pidFile := getPidFilePath()
+	os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
+}
+
+func cleanupPidFile() {
+	pidFile := getPidFilePath()
+	os.Remove(pidFile)
+}
+
+func getPidFilePath() string {
+	if runtimeDir := os.Getenv("XDG_RUNTIME_DIR"); runtimeDir != "" {
+		return filepath.Join(runtimeDir, "wayland-recorder.pid")
+	}
+	return "/tmp/wayland-recorder.pid"
 }

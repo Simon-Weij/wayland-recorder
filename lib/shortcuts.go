@@ -7,8 +7,8 @@ package lib
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
+	"syscall"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -186,15 +186,97 @@ func listenForActivation(conn *dbus.Conn, sessionPath dbus.ObjectPath, execPath 
 }
 
 func handleShortcutActivation(execPath string) {
-	fmt.Println("Shortcut activated! Starting recording...")
-	cmd := exec.Command(execPath, "record")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		fmt.Printf("Failed to start recording: %v\n", err)
-	} else {
-		fmt.Printf("Recording started (PID: %d)\n", cmd.Process.Pid)
+	fmt.Println("Shortcut activated! Sending clip signal...")
+	
+	pid, err := findRecordingProcess()
+	if err != nil {
+		fmt.Printf("Failed to find recording process: %v\n", err)
+		fmt.Println("Is the recording process running with --clip-mode?")
+		return
 	}
+	
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		fmt.Printf("Failed to find process %d: %v\n", pid, err)
+		return
+	}
+	
+	if err := process.Signal(syscall.SIGUSR1); err != nil {
+		fmt.Printf("Failed to send signal to process %d: %v\n", pid, err)
+		return
+	}
+	
+	fmt.Printf("Clip signal sent to process %d\n", pid)
+}
+
+func findRecordingProcess() (int, error) {
+	pid, err := pidFromFile()
+	if err == nil {
+		return pid, nil
+	}
+
+	pid, err = pidFromProcScan()
+	if err != nil {
+		return 0, fmt.Errorf("no clip-mode recording found; start with --clip-mode: %w", err)
+	}
+	return pid, nil
+}
+
+func pidFromFile() (int, error) {
+	pidFile := getPidFilePath()
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		return 0, err
+	}
+
+	var pid int
+	if _, err := fmt.Sscanf(string(data), "%d", &pid); err != nil {
+		return 0, err
+	}
+
+	if !processLooksLikeClipMode(pid) {
+		return 0, fmt.Errorf("pid file does not point to clip-mode process")
+	}
+
+	return pid, nil
+}
+
+func pidFromProcScan() (int, error) {
+	file, err := os.Open("/proc")
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+
+	entries, err := file.Readdirnames(-1)
+	if err != nil {
+		return 0, err
+	}
+
+	for _, entry := range entries {
+		var pid int
+		if _, err := fmt.Sscanf(entry, "%d", &pid); err != nil {
+			continue
+		}
+
+		if processLooksLikeClipMode(pid) {
+			return pid, nil
+		}
+	}
+
+	return 0, fmt.Errorf("no clip-mode process in /proc")
+}
+
+func processLooksLikeClipMode(pid int) bool {
+	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil {
+		return false
+	}
+
+	cmdStr := string(cmdline)
+	return strings.Contains(cmdStr, "wayland-recorder") &&
+		strings.Contains(cmdStr, "record") &&
+		strings.Contains(cmdStr, "clip-mode")
 }
 
 func RegisterShortcut(shortcut, description string) error {

@@ -75,7 +75,7 @@ func buildMuxerArgs(container string) ([]string, error) {
 	case "webm":
 		return []string{"!", "webmmux", "streamable=true", "name=mux"}, nil
 	case "mp4":
-		return []string{"!", "mp4mux", "fragment-duration=1000", "streamable=true", "name=mux"}, nil
+		return []string{"!", "mp4mux", "fragment-duration=1000", "streamable=true", "faststart=true", "name=mux"}, nil
 	case "mkv":
 		return []string{"!", "matroskamux", "streamable=true", "name=mux"}, nil
 	default:
@@ -100,7 +100,7 @@ func buildAudioPipeline(opts CaptureOptions) []string {
 	if opts.ClipMode {
 		return nil
 	}
-	
+
 	if !opts.AudioMonitor && !opts.AudioMic {
 		return nil
 	}
@@ -142,10 +142,10 @@ func appendAudioAndOutput(args []string, opts CaptureOptions) []string {
 				return args
 			}
 			args = append(args, muxerArgs...)
-			
+
 			args = append(args, audioPipeline...)
 			args = append(args, "!", "mux.")
-			
+
 			args = appendOutputSink(args, opts, "mux.")
 		}
 	} else {

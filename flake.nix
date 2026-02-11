@@ -14,6 +14,7 @@
         pkgs.gst_all_1.gst-plugins-good
         pkgs.gst_all_1.gst-plugins-bad
         pkgs.gst_all_1.gst-plugins-ugly
+        pkgs.ffmpeg
 
         pkgs.just
       ];
@@ -43,12 +44,14 @@
             pkgs.gst_all_1.gst-plugins-good
             pkgs.gst_all_1.gst-plugins-bad
             pkgs.gst_all_1.gst-plugins-ugly
+            pkgs.ffmpeg
           ];
 
           postInstall = ''
             wrapProgram $out/bin/wayland-recorder \
               --prefix PATH : ${lib.makeBinPath [
                 pkgs.gst_all_1.gstreamer
+                pkgs.ffmpeg
               ]} \
               --prefix GST_PLUGIN_SYSTEM_PATH_1_0 : ${lib.makeSearchPath "lib/gstreamer-1.0" [
                 pkgs.gst_all_1.gstreamer
