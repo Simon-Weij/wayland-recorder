@@ -34,7 +34,7 @@ func loadSettings() (*Settings, error) {
 	configPath := filepath.Join(homeDir, ".config", "wayland-recorder", "settings.json")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return nil, nil
+		return nil, err
 	}
 
 	var settings Settings

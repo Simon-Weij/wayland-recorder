@@ -20,20 +20,24 @@ var shortcutCmd = &cobra.Command{
 	Use:   "shortcut",
 	Short: "Register a global shortcut to start recording",
 	Run: func(cmd *cobra.Command, args []string) {
-		if shortcutKey == "" {
-			settings, err := loadSettings()
-			if err == nil && settings != nil && settings.Hotkey != "" {
-				shortcutKey = settings.Hotkey
-				fmt.Printf("Using shortcut from settings: %s\n", shortcutKey)
-			} else {
-				log.Fatal("No shortcut key specified. Use --key flag or set 'hotkey' in settings.json")
-			}
-		}
-
-		if err := lib.RegisterShortcut(shortcutKey, "Start screen recording"); err != nil {
-			log.Fatal(err)
-		}
+		key := getShortcutKey()
+		fatalIfError(lib.RegisterShortcut(key, "Start screen recording"))
 	},
+}
+
+func getShortcutKey() string {
+	if shortcutKey != "" {
+		return shortcutKey
+	}
+
+	settings, err := loadSettings()
+	if err == nil && settings != nil && settings.Hotkey != "" {
+		fmt.Printf("Using shortcut from settings: %s\n", settings.Hotkey)
+		return settings.Hotkey
+	}
+
+	log.Fatal("No shortcut key specified. Use --key flag or set 'hotkey' in settings.json")
+	return ""
 }
 
 func init() {

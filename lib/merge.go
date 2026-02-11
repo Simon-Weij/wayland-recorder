@@ -37,21 +37,16 @@ func createConcatFile(segments []SegmentInfo) (string, error) {
 
 	f, err := os.Create(concatFile)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to create concat file: %w", err)
 	}
 	defer f.Close()
 
 	validSegments := 0
 	for _, seg := range segments {
-		info, err := os.Stat(seg.Path)
-		if os.IsNotExist(err) {
-			continue
+		if isValidSegment(seg.Path) {
+			fmt.Fprintf(f, "file '%s'\n", seg.Path)
+			validSegments++
 		}
-		if info.Size() < 1024 {
-			continue
-		}
-		fmt.Fprintf(f, "file '%s'\n", seg.Path)
-		validSegments++
 	}
 
 	if validSegments == 0 {
@@ -59,6 +54,14 @@ func createConcatFile(segments []SegmentInfo) (string, error) {
 	}
 
 	return concatFile, nil
+}
+
+func isValidSegment(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.Size() >= minSegmentSize
 }
 
 func runFFmpegConcat(concatFile, outputPath string) error {
@@ -75,7 +78,7 @@ func runFFmpegConcat(concatFile, outputPath string) error {
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to merge segments: %v", err)
+		return fmt.Errorf("ffmpeg merge failed: %w", err)
 	}
 
 	return nil

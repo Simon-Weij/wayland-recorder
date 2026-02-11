@@ -16,12 +16,14 @@ import (
 )
 
 const (
-	DefaultFilePermissions = 0755
+	defaultFilePermissions = 0755
+	defaultSegmentDuration = 5
+	defaultBufferDuration  = 30
 )
 
 func Capture(nodeID uint32, opts CaptureOptions) error {
 	if err := ensureOutputDirectory(opts.OutputPath); err != nil {
-		return err
+		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 
 	applyDefaults(&opts)
@@ -29,7 +31,7 @@ func Capture(nodeID uint32, opts CaptureOptions) error {
 	segmentManager := setupSegmentManager(&opts)
 	args, err := BuildGStreamerArgs(nodeID, opts)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to build GStreamer arguments: %w", err)
 	}
 
 	return startRecording(args, opts, segmentManager)
@@ -37,7 +39,7 @@ func Capture(nodeID uint32, opts CaptureOptions) error {
 
 func ensureOutputDirectory(outputPath string) error {
 	directoryPath := filepath.Dir(outputPath)
-	return os.MkdirAll(directoryPath, DefaultFilePermissions)
+	return os.MkdirAll(directoryPath, defaultFilePermissions)
 }
 
 func applyDefaults(opts *CaptureOptions) {
@@ -57,10 +59,10 @@ func applyDefaults(opts *CaptureOptions) {
 		opts.TempDir = filepath.Join(os.TempDir(), fmt.Sprintf("wayland-recorder-%d", os.Getpid()))
 	}
 	if opts.SegmentDuration == 0 {
-		opts.SegmentDuration = 5
+		opts.SegmentDuration = defaultSegmentDuration
 	}
 	if opts.BufferDuration == 0 {
-		opts.BufferDuration = 30
+		opts.BufferDuration = defaultBufferDuration
 	}
 }
 
@@ -69,7 +71,8 @@ func setupSegmentManager(opts *CaptureOptions) *SegmentManager {
 		return nil
 	}
 
-	if err := os.MkdirAll(opts.TempDir, DefaultFilePermissions); err != nil {
+	if err := os.MkdirAll(opts.TempDir, defaultFilePermissions); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to create temp directory: %v\n", err)
 		return nil
 	}
 
@@ -78,12 +81,12 @@ func setupSegmentManager(opts *CaptureOptions) *SegmentManager {
 }
 
 func startRecording(args []string, opts CaptureOptions, segmentManager *SegmentManager) error {
-	cmd := exec.Command(GStreamerCommand, args...)
+	cmd := exec.Command(gstreamerCommand, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
-		return err
+		return fmt.Errorf("failed to start GStreamer: %w", err)
 	}
 
 	if opts.ClipMode {
@@ -96,7 +99,12 @@ func startRecording(args []string, opts CaptureOptions, segmentManager *SegmentM
 		go MonitorSegments(opts.TempDir, opts.Container, segmentManager)
 	}
 
-	return handleRecordingSignals(cmd, opts, segmentManager)
+	signals := setupSignalChannels(opts.ClipMode)
+	go func() {
+		signals.finished <- cmd.Wait()
+	}()
+
+	return processSignals(cmd, opts, segmentManager, signals)
 }
 
 func printRecordingInfo(opts CaptureOptions) {
@@ -111,30 +119,38 @@ func printRecordingInfo(opts CaptureOptions) {
 	}
 }
 
-func handleRecordingSignals(cmd *exec.Cmd, opts CaptureOptions, segmentManager *SegmentManager) error {
-	interruptSignal := make(chan os.Signal, 1)
-	clipSignal := make(chan os.Signal, 1)
-	finished := make(chan error, 1)
+type signalChannels struct {
+	interrupt chan os.Signal
+	clip      chan os.Signal
+	finished  chan error
+}
 
-	signal.Notify(interruptSignal, os.Interrupt, syscall.SIGTERM)
-	if opts.ClipMode {
-		signal.Notify(clipSignal, syscall.SIGUSR1)
+func setupSignalChannels(clipMode bool) signalChannels {
+	channels := signalChannels{
+		interrupt: make(chan os.Signal, 1),
+		clip:      make(chan os.Signal, 1),
+		finished:  make(chan error, 1),
 	}
+	
+	signal.Notify(channels.interrupt, os.Interrupt, syscall.SIGTERM)
+	if clipMode {
+		signal.Notify(channels.clip, syscall.SIGUSR1)
+	}
+	
+	return channels
+}
 
-	go func() {
-		finished <- cmd.Wait()
-	}()
-
+func processSignals(cmd *exec.Cmd, opts CaptureOptions, segmentManager *SegmentManager, signals signalChannels) error {
 	clipCounter := 1
 	for {
 		select {
-		case <-clipSignal:
+		case <-signals.clip:
 			handleClipRequest(opts, segmentManager, &clipCounter)
 
-		case <-interruptSignal:
+		case <-signals.interrupt:
 			return handleInterrupt(cmd, opts)
 
-		case err := <-finished:
+		case err := <-signals.finished:
 			return handleFinished(err)
 		}
 	}
@@ -160,7 +176,7 @@ func handleClipRequest(opts CaptureOptions, segmentManager *SegmentManager, clip
 	go createClipAsync(segments, clipPath)
 }
 
-func generateClipPath(basePath string, container string, counter int) string {
+func generateClipPath(basePath, container string, counter int) string {
 	dir := filepath.Dir(basePath)
 	base := strings.TrimSuffix(filepath.Base(basePath), filepath.Ext(basePath))
 	return filepath.Join(dir, fmt.Sprintf("%s-clip-%03d.%s", base, counter, container))
@@ -174,7 +190,14 @@ func createClipAsync(segments []SegmentInfo, outputPath string) {
 
 func handleInterrupt(cmd *exec.Cmd, opts CaptureOptions) error {
 	fmt.Println("\nStopping recording and finalizing...")
-	cmd.Process.Signal(syscall.SIGINT)
+	
+	if cmd.Process == nil {
+		return fmt.Errorf("process not started")
+	}
+	
+	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
+		return fmt.Errorf("failed to send interrupt signal: %w", err)
+	}
 
 	cmd.Wait()
 
@@ -202,13 +225,11 @@ func cleanupTempFiles(tempDir string) {
 }
 
 func writePidFile() {
-	pidFile := getPidFilePath()
-	os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
+	_ = os.WriteFile(getPidFilePath(), []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
 }
 
 func cleanupPidFile() {
-	pidFile := getPidFilePath()
-	os.Remove(pidFile)
+	_ = os.Remove(getPidFilePath())
 }
 
 func getPidFilePath() string {

@@ -5,17 +5,12 @@
 package lib
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
-	"os"
 
 	"github.com/godbus/dbus/v5"
 )
 
 const (
-	PortalServiceName    = "org.freedesktop.portal.Desktop"
-	PortalObjectPath     = "/org/freedesktop/portal/desktop"
 	CreateSessionMethod  = "org.freedesktop.portal.ScreenCast.CreateSession"
 	SelectSourcesMethod  = "org.freedesktop.portal.ScreenCast.SelectSources"
 	StartRecordingMethod = "org.freedesktop.portal.ScreenCast.Start"
@@ -25,39 +20,10 @@ type Stream struct {
 	NodeID uint32
 }
 
-func generateToken() string {
-	randomBytes := make([]byte, 16)
-	if _, err := rand.Read(randomBytes); err != nil {
-		return fmt.Sprintf("%d", os.Getpid())
-	}
-	return hex.EncodeToString(randomBytes)
-}
-
-func waitForResponse(conn *dbus.Conn, path dbus.ObjectPath) (map[string]dbus.Variant, error) {
-	signalChannel := make(chan *dbus.Signal, 1)
-	conn.Signal(signalChannel)
-
-	listenRule := fmt.Sprintf("type='signal',path='%s'", path)
-	conn.BusObject().Call("org.freedesktop.DBus.AddMatch", 0, listenRule)
-	defer conn.BusObject().Call("org.freedesktop.DBus.RemoveMatch", 0, listenRule)
-
-	for signal := range signalChannel {
-		if signal.Path == path {
-			responseCode := signal.Body[0].(uint32)
-			if responseCode != 0 {
-				return nil, fmt.Errorf("failed: %d", responseCode)
-			}
-			responseData := signal.Body[1].(map[string]dbus.Variant)
-			return responseData, nil
-		}
-	}
-	return nil, fmt.Errorf("no response")
-}
-
 func CreateSession() (*dbus.Conn, dbus.ObjectPath, error) {
 	connection, err := dbus.ConnectSessionBus()
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("failed to connect to session bus: %w", err)
 	}
 
 	desktopPortal := connection.Object(PortalServiceName, PortalObjectPath)
@@ -71,13 +37,13 @@ func CreateSession() (*dbus.Conn, dbus.ObjectPath, error) {
 	err = desktopPortal.Call(CreateSessionMethod, 0, options).Store(&requestPath)
 	if err != nil {
 		connection.Close()
-		return nil, "", err
+		return nil, "", fmt.Errorf("failed to create session: %w", err)
 	}
 
 	response, err := waitForResponse(connection, requestPath)
 	if err != nil {
 		connection.Close()
-		return nil, "", err
+		return nil, "", fmt.Errorf("failed to get session response: %w", err)
 	}
 
 	sessionHandle := response["session_handle"].Value().(string)
@@ -86,6 +52,10 @@ func CreateSession() (*dbus.Conn, dbus.ObjectPath, error) {
 }
 
 func SelectSources(conn *dbus.Conn, session dbus.ObjectPath, sourceType uint32, cursorMode uint32) error {
+	if conn == nil {
+		return fmt.Errorf("nil connection")
+	}
+
 	desktopPortal := conn.Object(PortalServiceName, PortalObjectPath)
 
 	options := map[string]dbus.Variant{
@@ -97,7 +67,7 @@ func SelectSources(conn *dbus.Conn, session dbus.ObjectPath, sourceType uint32, 
 	var requestPath dbus.ObjectPath
 	err := desktopPortal.Call(SelectSourcesMethod, 0, session, options).Store(&requestPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to select sources: %w", err)
 	}
 
 	_, err = waitForResponse(conn, requestPath)
@@ -105,6 +75,10 @@ func SelectSources(conn *dbus.Conn, session dbus.ObjectPath, sourceType uint32, 
 }
 
 func StartRecording(conn *dbus.Conn, session dbus.ObjectPath) ([]Stream, error) {
+	if conn == nil {
+		return nil, fmt.Errorf("nil connection")
+	}
+
 	desktopPortal := conn.Object(PortalServiceName, PortalObjectPath)
 
 	options := map[string]dbus.Variant{"handle_token": dbus.MakeVariant(generateToken())}
@@ -112,17 +86,17 @@ func StartRecording(conn *dbus.Conn, session dbus.ObjectPath) ([]Stream, error) 
 	var requestPath dbus.ObjectPath
 	err := desktopPortal.Call(StartRecordingMethod, 0, session, "", options).Store(&requestPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to start recording: %w", err)
 	}
 
 	response, err := waitForResponse(conn, requestPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get start recording response: %w", err)
 	}
 
 	streams := parseStreams(response)
 	if len(streams) == 0 {
-		return nil, fmt.Errorf("no streams found")
+		return nil, fmt.Errorf("no streams available")
 	}
 	return streams, nil
 }

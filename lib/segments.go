@@ -48,16 +48,16 @@ func (sm *SegmentManager) AddSegment(path string, number int) {
 
 func (sm *SegmentManager) cleanupOldSegments() {
 	cutoffTime := time.Now().Add(-sm.maxDuration)
-	newSegments := make([]SegmentInfo, 0)
+	kept := make([]SegmentInfo, 0, len(sm.segments))
 
 	for _, seg := range sm.segments {
 		if seg.StartTime.After(cutoffTime) {
-			newSegments = append(newSegments, seg)
+			kept = append(kept, seg)
 		} else {
 			os.Remove(seg.Path)
 		}
 	}
-	sm.segments = newSegments
+	sm.segments = kept
 }
 
 func (sm *SegmentManager) GetRecentSegments(duration time.Duration) []SegmentInfo {
@@ -65,21 +65,23 @@ func (sm *SegmentManager) GetRecentSegments(duration time.Duration) []SegmentInf
 	defer sm.mu.Unlock()
 
 	cutoffTime := time.Now().Add(-duration)
-	recentSegments := make([]SegmentInfo, 0)
+	recent := make([]SegmentInfo, 0)
 
 	for _, seg := range sm.segments {
 		if seg.StartTime.After(cutoffTime) {
-			recentSegments = append(recentSegments, seg)
+			recent = append(recent, seg)
 		}
 	}
-	return recentSegments
+	return recent
 }
 
 func MonitorSegments(tempDir string, container string, manager *SegmentManager) {
+	if manager == nil || tempDir == "" || container == "" {
+		return
+	}
+
 	pattern := filepath.Join(tempDir, "segment_*."+container)
-	seenSegments := make(map[string]bool)
-	fileSize := make(map[string]int64)
-	segmentNumber := 0
+	tracker := newSegmentTracker()
 
 	for {
 		time.Sleep(1 * time.Second)
@@ -89,22 +91,44 @@ func MonitorSegments(tempDir string, container string, manager *SegmentManager) 
 		}
 
 		for _, match := range matches {
-			if !seenSegments[match] {
-				info, err := os.Stat(match)
-				if err != nil {
-					continue
-				}
-				
-				prevSize, exists := fileSize[match]
-				if exists && prevSize == info.Size() && info.Size() > 1024 {
-					manager.AddSegment(match, segmentNumber)
-					seenSegments[match] = true
-					delete(fileSize, match)
-					segmentNumber++
-				} else {
-					fileSize[match] = info.Size()
-				}
-			}
+			tracker.processSegment(match, manager)
 		}
 	}
+}
+
+type segmentTracker struct {
+	seen        map[string]bool
+	fileSize    map[string]int64
+	nextNumber  int
+}
+
+func newSegmentTracker() *segmentTracker {
+	return &segmentTracker{
+		seen:       make(map[string]bool),
+		fileSize:   make(map[string]int64),
+		nextNumber: 0,
+	}
+}
+
+func (st *segmentTracker) processSegment(path string, manager *SegmentManager) bool {
+	if st.seen[path] {
+		return false
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+
+	prevSize, exists := st.fileSize[path]
+	if exists && prevSize == info.Size() && info.Size() > minSegmentSize {
+		manager.AddSegment(path, st.nextNumber)
+		st.seen[path] = true
+		delete(st.fileSize, path)
+		st.nextNumber++
+		return true
+	}
+	
+	st.fileSize[path] = info.Size()
+	return false
 }

@@ -15,7 +15,6 @@ import (
 
 const (
 	GlobalShortcutsPortal = "org.freedesktop.portal.GlobalShortcuts"
-	GlobalShortcutsPath   = "/org/freedesktop/portal/desktop"
 )
 
 type shortcutStruct struct {
@@ -23,9 +22,18 @@ type shortcutStruct struct {
 	Data map[string]dbus.Variant
 }
 
+var modifierMap = map[string]string{
+	"ctrl":    "Control",
+	"control": "Control",
+	"alt":     "Alt",
+	"shift":   "Shift",
+	"super":   "Super",
+	"meta":    "Super",
+	"win":     "Super",
+}
+
 func ParseShortcut(shortcut string) (string, error) {
-	normalized := normalizeShortcutString(shortcut)
-	
+	normalized := strings.TrimSpace(strings.ReplaceAll(shortcut, " + ", "+"))
 	if normalized == "" {
 		return "", fmt.Errorf("empty shortcut")
 	}
@@ -35,71 +43,39 @@ func ParseShortcut(shortcut string) (string, error) {
 		return "", fmt.Errorf("invalid shortcut format")
 	}
 	
-	modifiers, key, err := parseShortcutParts(parts)
-	if err != nil {
-		return "", err
-	}
-	
-	return buildShortcutString(modifiers, key), nil
-}
-
-func normalizeShortcutString(shortcut string) string {
-	normalized := strings.ReplaceAll(shortcut, " + ", "+")
-	return strings.TrimSpace(normalized)
-}
-
-func parseShortcutParts(parts []string) ([]string, string, error) {
 	var modifiers []string
 	var key string
 	
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
-		partLower := strings.ToLower(part)
 		
-		modifier, isModifier := parseModifier(partLower)
-		if isModifier {
+		if modifier, ok := modifierMap[strings.ToLower(part)]; ok {
 			modifiers = append(modifiers, modifier)
 		} else {
 			if key != "" {
-				return nil, "", fmt.Errorf("multiple keys specified: %s and %s", key, part)
+				return "", fmt.Errorf("multiple keys specified: %s and %s", key, part)
 			}
-			key = part
+			if len(part) == 1 {
+				key = strings.ToUpper(part)
+			} else {
+				key = part
+			}
 		}
 	}
 	
 	if key == "" {
-		return nil, "", fmt.Errorf("no key specified in shortcut")
+		return "", fmt.Errorf("no key specified in shortcut")
 	}
 	
-	if len(key) == 1 {
-		key = strings.ToUpper(key)
-	}
-	
-	return modifiers, key, nil
-}
-
-func parseModifier(mod string) (string, bool) {
-	switch mod {
-	case "ctrl", "control":
-		return "Control", true
-	case "alt":
-		return "Alt", true
-	case "shift":
-		return "Shift", true
-	case "super", "meta", "win":
-		return "Super", true
-	default:
-		return "", false
-	}
-}
-
-func buildShortcutString(modifiers []string, key string) string {
-	result := ""
+	var builder strings.Builder
 	for _, mod := range modifiers {
-		result += "<" + mod + ">"
+		builder.WriteString("<")
+		builder.WriteString(mod)
+		builder.WriteString(">")
 	}
-	result += key
-	return result
+	builder.WriteString(key)
+	
+	return builder.String(), nil
 }
 
 func createShortcutSession(conn *dbus.Conn, portal dbus.BusObject) (dbus.ObjectPath, error) {
@@ -124,17 +100,13 @@ func createShortcutSession(conn *dbus.Conn, portal dbus.BusObject) (dbus.ObjectP
 }
 
 func bindShortcut(conn *dbus.Conn, portal dbus.BusObject, sessionPath dbus.ObjectPath, parsedShortcut, description string) error {
-	shortcutData := map[string]dbus.Variant{
-		"description":       dbus.MakeVariant(description),
-		"preferred_trigger": dbus.MakeVariant(parsedShortcut),
-	}
-
-	shortcuts := []shortcutStruct{
-		{
-			ID:   "record-shortcut",
-			Data: shortcutData,
+	shortcuts := []shortcutStruct{{
+		ID: "record-shortcut",
+		Data: map[string]dbus.Variant{
+			"description":       dbus.MakeVariant(description),
+			"preferred_trigger": dbus.MakeVariant(parsedShortcut),
 		},
-	}
+	}}
 
 	bindOptions := map[string]dbus.Variant{
 		"handle_token": dbus.MakeVariant(generateToken()),
@@ -157,12 +129,14 @@ func bindShortcut(conn *dbus.Conn, portal dbus.BusObject, sessionPath dbus.Objec
 }
 
 func printBindResult(bindResponse map[string]dbus.Variant, parsedShortcut string) {
-	if shortcutsVariant, ok := bindResponse["shortcuts"]; ok {
-		if bindShortcuts, ok := shortcutsVariant.Value().([]map[string]dbus.Variant); ok {
-			if len(bindShortcuts) > 0 {
-				fmt.Printf("✓ Shortcut registered: %s\n", parsedShortcut)
-			}
-		}
+	shortcutsVariant, ok := bindResponse["shortcuts"]
+	if !ok {
+		return
+	}
+	
+	bindShortcuts, ok := shortcutsVariant.Value().([]map[string]dbus.Variant)
+	if ok && len(bindShortcuts) > 0 {
+		fmt.Printf("New shortcut registered: %s\n", parsedShortcut)
 	}
 }
 
@@ -195,13 +169,7 @@ func handleShortcutActivation(execPath string) {
 		return
 	}
 	
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		fmt.Printf("Failed to find process %d: %v\n", pid, err)
-		return
-	}
-	
-	if err := process.Signal(syscall.SIGUSR1); err != nil {
+	if err := sendClipSignal(pid); err != nil {
 		fmt.Printf("Failed to send signal to process %d: %v\n", pid, err)
 		return
 	}
@@ -209,22 +177,28 @@ func handleShortcutActivation(execPath string) {
 	fmt.Printf("Clip signal sent to process %d\n", pid)
 }
 
+func sendClipSignal(pid int) error {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	return process.Signal(syscall.SIGUSR1)
+}
+
 func findRecordingProcess() (int, error) {
-	pid, err := pidFromFile()
-	if err == nil {
+	if pid, err := pidFromFile(); err == nil {
 		return pid, nil
 	}
 
-	pid, err = pidFromProcScan()
-	if err != nil {
-		return 0, fmt.Errorf("no clip-mode recording found; start with --clip-mode: %w", err)
+	if pid, err := pidFromProcScan(); err == nil {
+		return pid, nil
 	}
-	return pid, nil
+	
+	return 0, fmt.Errorf("no clip-mode recording found; start with --clip-mode")
 }
 
 func pidFromFile() (int, error) {
-	pidFile := getPidFilePath()
-	data, err := os.ReadFile(pidFile)
+	data, err := os.ReadFile(getPidFilePath())
 	if err != nil {
 		return 0, err
 	}
@@ -242,20 +216,14 @@ func pidFromFile() (int, error) {
 }
 
 func pidFromProcScan() (int, error) {
-	file, err := os.Open("/proc")
-	if err != nil {
-		return 0, err
-	}
-	defer file.Close()
-
-	entries, err := file.Readdirnames(-1)
+	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return 0, err
 	}
 
 	for _, entry := range entries {
 		var pid int
-		if _, err := fmt.Sscanf(entry, "%d", &pid); err != nil {
+		if _, err := fmt.Sscanf(entry.Name(), "%d", &pid); err != nil {
 			continue
 		}
 
@@ -280,6 +248,10 @@ func processLooksLikeClipMode(pid int) bool {
 }
 
 func RegisterShortcut(shortcut, description string) error {
+	if shortcut == "" {
+		return fmt.Errorf("empty shortcut")
+	}
+
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		return fmt.Errorf("failed to connect to session bus: %w", err)
