@@ -7,6 +7,7 @@ package lib
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"syscall"
 
@@ -37,18 +38,18 @@ func ParseShortcut(shortcut string) (string, error) {
 	if normalized == "" {
 		return "", fmt.Errorf("empty shortcut")
 	}
-	
+
 	parts := strings.Split(normalized, "+")
 	if len(parts) == 0 {
 		return "", fmt.Errorf("invalid shortcut format")
 	}
-	
+
 	var modifiers []string
 	var key string
-	
+
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
-		
+
 		if modifier, ok := modifierMap[strings.ToLower(part)]; ok {
 			modifiers = append(modifiers, modifier)
 		} else {
@@ -62,11 +63,11 @@ func ParseShortcut(shortcut string) (string, error) {
 			}
 		}
 	}
-	
+
 	if key == "" {
 		return "", fmt.Errorf("no key specified in shortcut")
 	}
-	
+
 	var builder strings.Builder
 	for _, mod := range modifiers {
 		builder.WriteString("<")
@@ -74,7 +75,7 @@ func ParseShortcut(shortcut string) (string, error) {
 		builder.WriteString(">")
 	}
 	builder.WriteString(key)
-	
+
 	return builder.String(), nil
 }
 
@@ -113,7 +114,7 @@ func bindShortcut(conn *dbus.Conn, portal dbus.BusObject, sessionPath dbus.Objec
 	}
 
 	var bindRequestPath dbus.ObjectPath
-	err := portal.Call("org.freedesktop.portal.GlobalShortcuts.BindShortcuts", 0, 
+	err := portal.Call("org.freedesktop.portal.GlobalShortcuts.BindShortcuts", 0,
 		sessionPath, shortcuts, "", bindOptions).Store(&bindRequestPath)
 	if err != nil {
 		return fmt.Errorf("failed to bind shortcut: %w", err)
@@ -133,7 +134,7 @@ func printBindResult(bindResponse map[string]dbus.Variant, parsedShortcut string
 	if !ok {
 		return
 	}
-	
+
 	bindShortcuts, ok := shortcutsVariant.Value().([]map[string]dbus.Variant)
 	if ok && len(bindShortcuts) > 0 {
 		fmt.Printf("New shortcut registered: %s\n", parsedShortcut)
@@ -161,19 +162,19 @@ func listenForActivation(conn *dbus.Conn, sessionPath dbus.ObjectPath, execPath 
 
 func handleShortcutActivation(execPath string) {
 	fmt.Println("Shortcut activated! Sending clip signal...")
-	
+
 	pid, err := findRecordingProcess()
 	if err != nil {
 		fmt.Printf("Failed to find recording process: %v\n", err)
 		fmt.Println("Is the recording process running with --clip-mode?")
 		return
 	}
-	
+
 	if err := sendClipSignal(pid); err != nil {
 		fmt.Printf("Failed to send signal to process %d: %v\n", pid, err)
 		return
 	}
-	
+
 	fmt.Printf("Clip signal sent to process %d\n", pid)
 }
 
@@ -182,7 +183,37 @@ func sendClipSignal(pid int) error {
 	if err != nil {
 		return err
 	}
-	return process.Signal(syscall.SIGUSR1)
+	err = process.Signal(syscall.SIGUSR1)
+	if err == nil && notificationsEnabled(pid) {
+		cmd := exec.Command(
+			"notify-send",
+			"wayland-recorder",
+			"New clip!",
+			"-u",
+			"normal",
+			"-t",
+			"5000",
+		)
+		_ = cmd.Run()
+	}
+
+	return err
+}
+
+func notificationsEnabled(pid int) bool {
+	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err == nil {
+		cmdStr := string(cmdline)
+		if strings.Contains(cmdStr, "--no-notifications") {
+			return false
+		}
+	}
+
+	if settings, err := LoadSettings(); err == nil {
+		return settings.Notifications
+	}
+
+	return true
 }
 
 func findRecordingProcess() (int, error) {
@@ -193,7 +224,7 @@ func findRecordingProcess() (int, error) {
 	if pid, err := pidFromProcScan(); err == nil {
 		return pid, nil
 	}
-	
+
 	return 0, fmt.Errorf("no clip-mode recording found; start with --clip-mode")
 }
 

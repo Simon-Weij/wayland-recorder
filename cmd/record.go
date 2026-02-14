@@ -30,6 +30,7 @@ var (
 	bufferDuration  int
 	segmentDuration int
 	tempDir         string
+	noNotifications bool
 )
 
 const (
@@ -96,6 +97,7 @@ var recordCmd = &cobra.Command{
 		fatalIfError(err)
 
 		fmt.Printf("Recording stream %d\n", streams[0].NodeID)
+
 		captureOpts := lib.CaptureOptions{
 			OutputPath:      outputPath,
 			Codec:           codec,
@@ -108,7 +110,9 @@ var recordCmd = &cobra.Command{
 			BufferDuration:  bufferDuration,
 			SegmentDuration: segmentDuration,
 			TempDir:         tempDir,
+			Notifications:   !noNotifications,
 		}
+
 		fatalIfError(lib.Capture(streams[0].NodeID, captureOpts))
 	},
 }
@@ -125,6 +129,7 @@ type recordDefaults struct {
 	segmentDuration int
 	tempDir         string
 	output          string
+	notifications   bool
 }
 
 func getRecordDefaults() recordDefaults {
@@ -140,9 +145,10 @@ func getRecordDefaults() recordDefaults {
 		segmentDuration: 5,
 		tempDir:         "",
 		output:          filepath.Join(os.Getenv("HOME"), "Videos", "recordings", "recording-"+time.Now().Format("2006-01-02-15-04-05")+".mp4"),
+		notifications:   true,
 	}
 
-	settings, err := loadSettings()
+	settings, err := lib.LoadSettings()
 	if err != nil || settings == nil {
 		return defaults
 	}
@@ -174,6 +180,7 @@ func getRecordDefaults() recordDefaults {
 
 	defaults.audioMonitor = settings.AudioMonitor
 	defaults.audioMic = settings.AudioMic
+	defaults.notifications = settings.Notifications
 
 	if settings.OutputPath != "" {
 		defaults.output = filepath.Join(settings.OutputPath, "recording-"+time.Now().Format("2006-01-02-15-04-05")+"."+settings.Container)
@@ -184,7 +191,6 @@ func getRecordDefaults() recordDefaults {
 
 func init() {
 	rootCmd.AddCommand(recordCmd)
-
 	defaults := getRecordDefaults()
 
 	recordCmd.Flags().StringVarP(&sourceTypeStr, "source", "s", "monitor", "Source type: monitor, window, or both")
@@ -200,4 +206,5 @@ func init() {
 	recordCmd.Flags().IntVar(&bufferDuration, "buffer-duration", defaults.bufferDuration, "Duration in seconds to keep buffered for clipping")
 	recordCmd.Flags().IntVar(&segmentDuration, "segment-duration", defaults.segmentDuration, "Duration in seconds for each segment file")
 	recordCmd.Flags().StringVar(&tempDir, "temp-dir", defaults.tempDir, "Temporary directory for segments (default: system temp)")
+	recordCmd.Flags().BoolVar(&noNotifications, "no-notifications", !defaults.notifications, "Disable notifications")
 }

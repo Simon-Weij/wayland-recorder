@@ -27,6 +27,7 @@ type CaptureOptions struct {
 	SegmentDuration int
 	ClipMode        bool
 	TempDir         string
+	Notifications   bool
 }
 
 func BuildGStreamerArgs(nodeID uint32, opts CaptureOptions) ([]string, error) {
@@ -175,10 +176,10 @@ func appendOutputSink(args []string, opts CaptureOptions, prefix string) []strin
 			args = append(args, "filesink", fmt.Sprintf("location=%s", opts.OutputPath))
 			return args
 		}
-		
+
 		segmentPattern := filepath.Join(opts.TempDir, "segment_%05d."+opts.Container)
 		maxSizeTime := opts.SegmentDuration * 1000000000
-		
+
 		args = append(args, "splitmuxsink",
 			fmt.Sprintf("muxer=%s", config.name),
 			fmt.Sprintf("location=%s", segmentPattern),

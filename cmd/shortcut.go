@@ -30,7 +30,7 @@ func getShortcutKey() string {
 		return shortcutKey
 	}
 
-	settings, err := loadSettings()
+	settings, err := lib.LoadSettings()
 	if err == nil && settings != nil && settings.Hotkey != "" {
 		fmt.Printf("Using shortcut from settings: %s\n", settings.Hotkey)
 		return settings.Hotkey

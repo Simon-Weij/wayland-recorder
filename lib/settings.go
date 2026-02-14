@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-package cmd
+package lib
 
 import (
 	"encoding/json"
@@ -23,9 +23,10 @@ type Settings struct {
 	BufferDuration  int    `json:"bufferDuration"`
 	SegmentDuration int    `json:"segmentDuration"`
 	TempDir         string `json:"tempDir"`
+	Notifications   bool   `json:"notifications"`
 }
 
-func loadSettings() (*Settings, error) {
+func LoadSettings() (*Settings, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
